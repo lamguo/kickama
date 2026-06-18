@@ -294,7 +294,8 @@ class DataGenerator:
 def parse_args():
     parser = argparse.ArgumentParser(description="Test data generator")
     parser.add_argument("--output-dir", "-o", default="./test_data", help="Output directory")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed (auto-generated if not provided)")
+    parser.add_argument("--print-seed", action="store_true", help="Print the seed used and exit")
     parser.add_argument("--users", type=int, default=50, help="Number of users to generate")
     parser.add_argument("--orders", type=int, default=200, help="Number of orders to generate")
     parser.add_argument("--trades", type=int, default=500, help="Number of trades to generate")
@@ -308,11 +309,21 @@ def parse_args():
 
 def main():
     args = parse_args()
-    gen = DataGenerator(args.seed)
+    
+    seed = args.seed
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+    
+    if args.print_seed:
+        print(f"Random seed: {seed}")
+        print(f"To reproduce: python3 tools/data_generator.py --seed {seed}")
+        return 0
+    
+    gen = DataGenerator(seed)
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    print(f"Generating test data with seed {args.seed}...")
+    print(f"Generating test data with seed {seed}...")
 
     # Generate users
     users = gen.generate_users(args.users)
@@ -359,6 +370,8 @@ def main():
         gen.export_csv(os.path.join(args.output_dir, "orders.csv"), orders)
         gen.export_csv(os.path.join(args.output_dir, "trades.csv"), trades)
 
+    metadata = {"seed": seed, "generated_at": datetime.now(timezone.utc).isoformat(), "tool_version": "1.0.0"}
+    gen.export_json(os.path.join(args.output_dir, "metadata.json"), metadata)
     print(f"\nAll data generated in {args.output_dir}/")
 
 
