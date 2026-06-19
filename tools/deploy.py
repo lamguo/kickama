@@ -110,6 +110,41 @@ ENVIRONMENTS = {
 }
 
 ROLLBACK_VERSIONS: Dict[str, List[str]] = {}
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300
+DEPLOYMENT_DEADLINE: Optional[float] = None
+
+
+def non_negative_timeout(value: str) -> int:
+    try:
+        timeout = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--timeout must be an integer number of seconds") from exc
+    if timeout < 0:
+        raise argparse.ArgumentTypeError("--timeout must be zero or greater")
+    return timeout
+
+
+def set_deployment_timeout(timeout_seconds: int) -> None:
+    global DEPLOYMENT_DEADLINE
+    DEPLOYMENT_DEADLINE = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
+
+
+def remaining_deployment_timeout() -> Optional[float]:
+    if DEPLOYMENT_DEADLINE is None:
+        return None
+    return max(0.0, DEPLOYMENT_DEADLINE - time.monotonic())
+
+
+def effective_command_timeout(default_timeout: int = DEFAULT_COMMAND_TIMEOUT_SECONDS) -> int:
+    remaining = remaining_deployment_timeout()
+    if remaining is None:
+        return default_timeout
+    return max(1, int(min(default_timeout, remaining)))
+
+
+def deployment_timeout_expired() -> bool:
+    remaining = remaining_deployment_timeout()
+    return remaining is not None and remaining <= 0
 
 
 def load_deployment_history(env: str) -> List[Dict]:
@@ -131,15 +166,18 @@ def save_deployment_history(env: str, history: List[Dict]):
 
 def run_command(cmd: List[str], cwd: Optional[str] = None,
                 capture: bool = False) -> Tuple[int, str]:
+    if deployment_timeout_expired():
+        return -1, "Deployment timed out before command could start"
+    timeout = effective_command_timeout()
     try:
         if capture:
-            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
             return result.returncode, result.stdout + result.stderr
         else:
-            result = subprocess.run(cmd, cwd=cwd, timeout=300)
+            result = subprocess.run(cmd, cwd=cwd, timeout=timeout)
             return result.returncode, ""
     except subprocess.TimeoutExpired:
-        return -1, "Command timed out"
+        return -1, f"Command timed out after {timeout} seconds"
     except FileNotFoundError:
         return -1, f"Command not found: {cmd[0]}"
 
@@ -276,12 +314,13 @@ def deploy_to_kubernetes(service: str, env: str, tag: str) -> bool:
 
     # Wait for rollout
     print(f"Waiting for rollout to complete...")
+    rollout_timeout = effective_command_timeout()
     returncode, output = run_command([
         "kubectl", "rollout", "status",
         f"deployment/{service_config['name']}",
         "-n", namespace,
         "--context", env_config["kube_context"],
-        "--timeout=300s",
+        f"--timeout={rollout_timeout}s",
     ])
 
     if returncode != 0:
@@ -305,11 +344,15 @@ def health_check(service: str, env: str) -> bool:
 
     print(f"Health check: {url}")
     for i in range(30):
+        if deployment_timeout_expired():
+            print("Health check stopped because deployment timed out")
+            return False
         returncode, output = run_command(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", url], capture=True)
         if returncode == 0 and output.strip() == "200":
             print(f"Health check passed")
             return True
-        time.sleep(2)
+        remaining = remaining_deployment_timeout()
+        time.sleep(min(2, remaining) if remaining is not None else 2)
 
     print(f"Health check failed after 60 seconds")
     return False
@@ -383,12 +426,19 @@ def parse_args():
     parser.add_argument("--version", help="Version to rollback to")
     parser.add_argument("--list", action="store_true", help="List deployments")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    parser.add_argument(
+        "--timeout",
+        type=non_negative_timeout,
+        default=0,
+        help="Maximum total deployment duration in seconds; 0 disables the total deadline",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    set_deployment_timeout(args.timeout)
 
     if args.list:
         list_deployments(args.env, args.service if args.service != "all" else None)
@@ -417,10 +467,16 @@ def main():
         for s in services:
             print(f"  {s}: tag={args.tag}, build={not args.skip_build}, "
                   f"test={not args.skip_test}")
+        if args.timeout:
+            print(f"  timeout={args.timeout}s")
         return 0
 
     all_successful = True
     for service in services:
+        if deployment_timeout_expired():
+            print("Deployment timed out before all services completed")
+            all_successful = False
+            break
         print(f"\n{'='*60}")
         print(f"  Deploying {service} to {args.env}")
         print(f"  Tag: {args.tag}")
