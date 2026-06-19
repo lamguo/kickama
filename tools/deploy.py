@@ -387,6 +387,154 @@ def parse_args():
     return parser.parse_args()
 
 
+def _is_secret(name: str) -> bool:
+    """Check if an environment variable name looks like a secret."""
+    name_upper = name.upper()
+    return any(kw in name_upper for kw in ("TOKEN", "SECRET", "KEY", "PASSWORD"))
+
+
+def _redact_env_vars() -> Dict[str, str]:
+    """Return environment variables with secret values redacted."""
+    return {
+        k: ("***REDACTED***" if _is_secret(k) else v)
+        for k, v in os.environ.items()
+    }
+
+
+def _dry_run_deploy(services: List[str], env: str, tag: str,
+                    skip_build: bool = False, skip_test: bool = False,
+                    skip_health: bool = False) -> int:
+    """Print every action that would be taken during deployment.
+
+    Returns the total number of actions that would have run.
+    """
+    env_config = ENVIRONMENTS.get(env, {})
+    action_count = 0
+
+    print("=" * 60)
+    print("DRY RUN — no changes will be made")
+    print("=" * 60)
+    print(f"Environment : {env}")
+    print(f"Namespace   : {env_config.get('namespace', 'N/A')}")
+    print(f"Kube context: {env_config.get('kube_context', 'N/A')}")
+    print(f"Host        : {env_config.get('host', 'N/A')}")
+    print(f"Tag         : {tag}")
+    print(f"Services    : {', '.join(services)}")
+    print()
+
+    # Environment variables
+    print("Environment variables:")
+    for k, v in sorted(_redact_env_vars().items()):
+        print(f"  {k}={v}")
+    print()
+
+    for service in services:
+        config = SERVICES.get(service, {})
+        print(f"--- {service} ---")
+        print(f"  Name       : {config.get('name', 'N/A')}")
+        print(f"  Language   : {config.get('language', 'N/A')}")
+        print(f"  Build path : {config.get('build_path', 'N/A')}")
+        print(f"  Dockerfile : {config.get('dockerfile', 'N/A')}")
+        print(f"  Port       : {config.get('port', 'N/A')}")
+        print(f"  Replicas   : {config.get('replicas', {}).get(env, 1)}")
+        print(f"  Health EP  : {config.get('health_endpoint', 'N/A')}")
+        print()
+
+        if not skip_build:
+            print(f"  [BUILD] {config.get('build_command', 'N/A')}")
+            action_count += 1
+
+        if not skip_test:
+            print(f"  [TEST]  {config.get('test_command', 'N/A')}")
+            action_count += 1
+
+        image = f"tent/{service}:{tag}"
+        print(f"  [DOCKER BUILD] docker build -t {image} -f {config.get('dockerfile', 'N/A')} .")
+        action_count += 1
+
+        registry = "registry.example.com"
+        remote_image = f"{registry}/tent/{service}:{tag}"
+        print(f"  [DOCKER TAG]   docker tag {image} {remote_image}")
+        action_count += 1
+        print(f"  [DOCKER PUSH]  docker push {remote_image}")
+        action_count += 1
+
+        manifest = f"deploy/k8s/{service}.yaml"
+        namespace = env_config.get("namespace", "default")
+        kube_ctx = env_config.get("kube_context", "")
+        print(f"  [KUBECTL APPLY] kubectl apply -f {manifest} -n {namespace} --context {kube_ctx}")
+        action_count += 1
+        print(f"  [KUBECTL SET]   kubectl set image deployment/{config.get('name', service)} {service}={remote_image} -n {namespace} --context {kube_ctx}")
+        action_count += 1
+        replicas = config.get("replicas", {}).get(env, 1)
+        print(f"  [KUBECTL SCALE] kubectl scale deployment/{config.get('name', service)} --replicas={replicas} -n {namespace} --context {kube_ctx}")
+        action_count += 1
+        print(f"  [KUBECTL ROLLOUT] kubectl rollout status deployment/{config.get('name', service)} -n {namespace} --context {kube_ctx} --timeout=300s")
+        action_count += 1
+
+        if not skip_health:
+            host = env_config.get("host", "localhost")
+            port = config.get("port", 0)
+            ep = config.get("health_endpoint", "/")
+            print(f"  [HEALTH CHECK] curl http://{host}:{port}{ep} (up to 60s)")
+            action_count += 1
+
+        print(f"  [SAVE HISTORY] deployment history for {env}")
+        action_count += 1
+        print()
+
+    print("=" * 60)
+    print(f"DRY RUN SUMMARY: {action_count} actions would have run for {len(services)} service(s)")
+    print("=" * 60)
+    return action_count
+
+
+def _dry_run_rollback(service: str, env: str, version: str) -> int:
+    """Print every action that would be taken during rollback."""
+    env_config = ENVIRONMENTS.get(env, {})
+    config = SERVICES.get(service, {})
+    action_count = 0
+
+    print("=" * 60)
+    print("DRY RUN ROLLBACK — no changes will be made")
+    print("=" * 60)
+    print(f"Environment : {env}")
+    print(f"Service     : {service}")
+    print(f"Version     : {version}")
+    print(f"Namespace   : {env_config.get('namespace', 'N/A')}")
+    print(f"Kube context: {env_config.get('kube_context', 'N/A')}")
+    print()
+
+    print("Environment variables:")
+    for k, v in sorted(_redact_env_vars().items()):
+        print(f"  {k}={v}")
+    print()
+
+    registry = "registry.example.com"
+    remote_image = f"{registry}/tent/{service}:{version}"
+    namespace = env_config.get("namespace", "default")
+    kube_ctx = env_config.get("kube_context", "")
+    svc_name = config.get("name", service)
+
+    print(f"  [KUBECTL SET]   kubectl set image deployment/{svc_name} {service}={remote_image} -n {namespace} --context {kube_ctx}")
+    action_count += 1
+    print(f"  [KUBECTL ROLLOUT] kubectl rollout status deployment/{svc_name} -n {namespace} --context {kube_ctx} --timeout=300s")
+    action_count += 1
+    host = env_config.get("host", "localhost")
+    port = config.get("port", 0)
+    ep = config.get("health_endpoint", "/")
+    print(f"  [HEALTH CHECK] curl http://{host}:{port}{ep} (up to 60s)")
+    action_count += 1
+    print(f"  [SAVE HISTORY] deployment history for {env}")
+    action_count += 1
+    print()
+
+    print("=" * 60)
+    print(f"DRY RUN SUMMARY: {action_count} actions would have run for rollback of {service}")
+    print("=" * 60)
+    return action_count
+
+
 def main():
     args = parse_args()
 
@@ -404,7 +552,7 @@ def main():
             return 1
 
         if args.dry_run:
-            print(f"Would rollback {args.service} in {args.env} to {args.version}")
+            _dry_run_rollback(args.service, args.env, args.version)
             return 0
 
         success = rollback_service(args.service, args.env, args.version)
@@ -413,10 +561,8 @@ def main():
     services = list(SERVICES.keys()) if args.service == "all" else [args.service]
 
     if args.dry_run:
-        print(f"Would deploy to {args.env}:")
-        for s in services:
-            print(f"  {s}: tag={args.tag}, build={not args.skip_build}, "
-                  f"test={not args.skip_test}")
+        _dry_run_deploy(services, args.env, args.tag,
+                        args.skip_build, args.skip_test, args.skip_health)
         return 0
 
     all_successful = True
