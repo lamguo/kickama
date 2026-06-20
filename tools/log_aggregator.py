@@ -18,13 +18,6 @@ because it can process logs from archived backups that are stored in
 S3 Glacier. The ELK stack only indexes logs from the last 90 days.
 For logs older than 90 days, this script is the only option.
 
-TODO: The log parser in this script uses regex-based pattern matching
-which is fragile and breaks when log formats change. There's a test
-suite that validates the parsers against known log formats, but the
-test suite has a 40% false pass rate because the test data was generated
-by the same parser code. The test data needs to be regenerated from
-actual production logs.
-
 Usage:
     python3 log_aggregator.py --input /var/log/app/*.log --output report.json
     python3 log_aggregator.py --from-s3 s3://logs-bucket/production/ --date 2024-01-15
