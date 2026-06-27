@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 from health_check import (
     CircuitBreaker, CircuitState, retry_with_backoff,
-    check_http_service, get_circuit, _service_circuits,
+    check_http_service, _service_circuits,
     parse_args, DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR,
     DEFAULT_CIRCUIT_THRESHOLD, DEFAULT_CIRCUIT_COOLDOWN,
 )
@@ -29,7 +29,9 @@ class TestCircuitBreaker(unittest.TestCase):
 
     def test_opens_after_threshold_failures(self):
         cb = CircuitBreaker(threshold=3, cooldown=60)
-        cb.record_failure(); cb.record_failure(); cb.record_failure()
+        cb.record_failure()
+        cb.record_failure()
+        cb.record_failure()
         self.assertEqual(cb.state, CircuitState.OPEN)
         self.assertFalse(cb.allow_request())
 
@@ -42,7 +44,8 @@ class TestCircuitBreaker(unittest.TestCase):
 
     def test_success_resets_to_closed(self):
         cb = CircuitBreaker(threshold=2, cooldown=60)
-        cb.record_failure(); cb.record_failure()
+        cb.record_failure()
+        cb.record_failure()
         self.assertEqual(cb.state, CircuitState.OPEN)
         cb.record_success()
         self.assertEqual(cb.state, CircuitState.CLOSED)

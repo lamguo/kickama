@@ -39,13 +39,11 @@ import os
 import random
 import socket
 import ssl
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -458,7 +456,7 @@ def run_health_checks(
 
 def print_health_report(results: Dict[str, Any]):
     print(f"\n{'='*60}")
-    print(f"  HEALTH CHECK REPORT")
+    print("  HEALTH CHECK REPORT")
     print(f"  Host: {results['hostname']}")
     print(f"  Time: {results['timestamp']}")
     print(f"  Overall: {results['overall_status']}")
@@ -488,7 +486,7 @@ def print_health_report(results: Dict[str, Any]):
 
     # Circuit breaker states
     if results.get("circuit_breakers"):
-        print(f"\n  Circuit Breakers:")
+        print("\n  Circuit Breakers:")
         for cb_name, cb_state in results["circuit_breakers"].items():
             icon = "✓" if cb_state["state"] == "closed" else "⚠" if cb_state["state"] == "half_open" else "✗"
             print(f"    {icon} {cb_name}: {cb_state['state']} "
